@@ -1,0 +1,99 @@
+Parameters:
+  Project:
+    Description: Project template is been applied to.
+    Type: String
+    Default: udagram
+  Environment:
+    Description: An environment name that will be prefixed to resources
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+
+Resources:
+
+  UdagramLBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh port 22 and http port 80
+      GroupName: !Sub ${Project}-${Environment}-lb-sg
+      VpcId:
+        Fn::ImportValue: !Sub ${Project}-${Environment}-VPCID
+      SecurityGroupIngress:
+        - FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+          CidrIp: 
+            Fn::ImportValue: !Sub ${Project}-${Environment}-VpcCIDR
+      Tags:
+        - Key: Name
+          Value: UdagramSecgroup   
+  
+  UdagramServerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh port 22 and http port 80
+      GroupName: !Sub ${Project}-${Environment}-public-sg
+      VpcId: 
+        Fn::ImportValue: !Sub ${Project}-${Environment}-VPCID
+      SecurityGroupIngress:
+        - FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+          CidrIp: 0.0.0.0/0
+        - FromPort: 22
+          ToPort: 22
+          IpProtocol: TCP
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${Project}-${Environment}-public-sg
+
+  PrivateSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh port 22 and http port 80
+      GroupName: !Sub ${Project}-${Environment}-private-sg
+      VpcId: 
+        Fn::ImportValue: !Sub ${Project}-${Environment}-VPCID
+      SecurityGroupIngress:
+        - FromPort: 80
+          ToPort: 80
+          IpProtocol: TCP
+          SourceSecurityGroupId: !Ref UdagramLBSG
+        - FromPort: 22
+          ToPort: 22
+          IpProtocol: TCP
+          CidrIp: 
+            Fn::ImportValue: !Sub ${Project}-${Environment}-VpcCIDR
+      Tags:
+        - Key: Name
+          Value: !Sub ${Project}-${Environment}-private-sg
+        
+Outputs:
+  UdagramLBSG:
+    Description: Return the ID of the LoadBalancer
+    Value: !Ref UdagramLBSG
+    Export:
+       Name: !Sub ${Project}-${Environment}-lb-sg-id
+
+  UdagramServerSG:
+    Description: Return the ID of the ec2 server Security group
+    Value: !Ref UdagramServerSG
+    Export:
+       Name: !Sub ${Project}-${Environment}-public-sg-id
+
+  PrivateSG:
+    Description: >
+      Return the SG of the application server. 
+      This Ensures the server only accept traffic from within the VPC
+    Value: !Ref PrivateSG
+    Export:
+      Name: !Sub ${Project}-${Environment}-private-sg-id

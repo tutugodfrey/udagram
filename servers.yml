@@ -1,0 +1,194 @@
+Parameters:
+  Project:
+    Description: Project template is been applied to.
+    Type: String
+    Default: udagram
+  Environment:
+    Description: An environment name that will be prefixed to resources
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+  KeyName:
+    Description: SSH public key to login to instance
+    Type: String
+    Default: uda-keypair
+  LaunchTemplateVersion:
+    Description: Version of launch template in use
+    Type: Number
+    Default: 1
+
+# Maps of Ubuntu image Id to regions
+Mappings:
+  Region2AMI:
+    us-east-1: 
+      AMI: ami-005de95e8ff495156 # Ubuntu 18.04 LTS
+
+Conditions:
+  AttachKeyPair: !Equals [ "dev", !Ref Environment ]
+  DeployToPrivatSubnet: !Not [ !Equals ["dev", !Ref Environment ]]
+  InstanceSizing: !Not [ !Equals ["dev", !Ref Environment ]]
+
+Resources:
+  #instace profile contains the IAM Role name(s) that we want to associate to our auto scaling EC2 Servers
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref Ec2IamRole
+
+  Ec2IamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+
+  S3Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${Project}-s3InstancePolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 's3:*'
+            Resource: '*'
+      Roles:
+      - !Ref Ec2IamRole
+  
+  # Provision a Load Balancer in Public subnets
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub ${Project}-${Environment}-PUB-SN-A
+      - Fn::ImportValue: !Sub ${Project}-${Environment}-PUB-SN-B
+      SecurityGroups:
+      - Fn::ImportValue: !Sub ${Project}-${Environment}-lb-sg-id
+  
+  LBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref WebappTargetGroup
+      LoadBalancerArn:
+         Ref: LoadBalancer
+      Port: 80
+      Protocol: HTTP
+          
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref WebappTargetGroup
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: !Ref LBListener
+      Priority: 1
+  
+  WebappTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 10
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: ${Project}-${Environment}-VPCID
+  
+  # EC2 Instance template
+  WebappLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [ Region2AMI, !Ref AWS::Region, AMI ]
+      InstanceType: !If [InstanceSizing, t3.small, t2.micro]
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups:
+      # - Fn::ImportValue: !Sub ${Project}-${Environment}-public-sg-id
+      - Fn::ImportValue: !Sub ${Project}-${Environment}-private-sg-id
+      BlockDeviceMappings:
+      - DeviceName: /dev/sda1
+        Ebs: 
+          VolumeSize: 10
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          apt-get update -y
+          apt-get install apache2 unzip awscli -y
+          systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://udacity-demo-1/udacity.zip .
+          unzip -o udacity.zip
+        
+  # EC2 Autoscaling group
+  WebappAutoscalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+      - !If [ DeployToPrivatSubnet, Fn::ImportValue: !Sub "${Project}-${Environment}-PRIV-NETS", Fn::ImportValue: !Sub "${Project}-${Environment}-PUB-NETS" ]
+      LaunchConfigurationName: !Ref WebappLaunchConfiguration
+      MinSize: 1
+      MaxSize: 5
+      TargetGroupARNs:
+      - !Ref WebappTargetGroup
+      HealthCheckGracePeriod: 120
+      HealthCheckType: ELB
+      Tags:
+        - Key: Name
+          Value: !Sub ${Project}-${Environment}-Webapp
+          PropagateAtLaunch: Yes
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !FindInMap [Region2AMI, !Ref AWS::Region, AMI]
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId:
+        Fn::ImportValue: !Sub ${Project}-${Environment}-PUB-SN-A
+      AvailabilityZone:
+        Fn::ImportValue: !Sub ${Project}-${Environment}-PUB-SN-AZ-A
+      SecurityGroupIds:
+      - Fn::ImportValue: !Sub ${Project}-${Environment}-public-sg-id
+      Tags:
+        - Key: Name
+          Value: !Sub ${Project}-${Environment}-bastion-server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          apt-get update -y
+          apt-get install apache2 unzip awscli -y
+          systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://udacity-demo-1/udacity.zip .
+          unzip -o udacity.zip
+          
+Outputs:
+  InstancePublicIp: 
+    Description: Instance Public 
+    Value: !GetAtt BastionInstance.PublicIp
+  
+  LoadBalancerDNS:
+    Description: Load Balancer DNS Name to access the website
+    Value: 
+      !Join ['', [http://, Fn::GetAtt: [ LoadBalancer, DNSName ]]]
