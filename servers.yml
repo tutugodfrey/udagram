@@ -118,6 +118,7 @@ Resources:
     Type: AWS::AutoScaling::LaunchConfiguration
     Properties:
       ImageId: !FindInMap [ Region2AMI, !Ref AWS::Region, AMI ]
+      KeyName: !If [AttachKeyPair, !Ref KeyName, !Ref AWS::NoValue]
       InstanceType: !If [InstanceSizing, t3.small, t2.micro]
       IamInstanceProfile: !Ref InstanceProfile
       SecurityGroups:
